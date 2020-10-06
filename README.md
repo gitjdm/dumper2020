@@ -50,6 +50,10 @@ NtQuerySystemInformation
 NtWriteVirtualMemory
 ```
 
+### Screenshot
+
+![dumper2020](dumper2020.png)
+
 ### Considerations
 
 * 64-bit only
