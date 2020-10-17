@@ -11,7 +11,7 @@
 #include <string>
 
 BOOL Dump(const wchar_t* wcDumpPath);
-BOOL ResolveHelpers();
+BOOL ResolveFunctions();
 BOOL Requirements();
 DWORD GetPid();
 HANDLE GetHandle(DWORD dwPid);

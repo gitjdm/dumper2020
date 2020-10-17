@@ -9,12 +9,10 @@ Yet another proof-of-concept for an LSASS memory dumper. This one incorporates e
 Dumper2020 relies almost completely on the work of others, to whom I owe a great deal of thanks:
 
 * **[@Jackson_T](https://twitter.com/Jackson_T)** - Syscall macros were generated with [SysWhispers](https://github.com/jthuraisamy/SysWhispers) and code from [TelemetrySourcerer](https://github.com/jthuraisamy/TelemetrySourcerer) was adapted for API hook detection/removal.
-
 * **[@monoxgas](https://twitter.com/monoxgas)** - [sRDI](https://github.com/monoxgas/sRDI) was integrated to dynamically load the system DLL that exports the *MiniDumpWriteDump* function.
-
 * **[@SpecialHoang](https://twitter.com/SpecialHoang)** - No LSASS dumping/EDR avoiding tool is complete without crediting this [2019 Medium post](https://medium.com/@fsx30/bypass-edrs-memory-protection-introduction-to-hooking-2efb21acffd6) and the associated proof-of-concept, [AndrewSpecial](https://github.com/hoangprod/AndrewSpecial), which uses Win32 API functions to unhook *NtReadVirtualMemory* before dumping LSASS.
-
 * **[@Cneelis](https://twitter.com/Cneelis)** - Building on @SpecialHoang's work, [Dumpert](https://github.com/outflanknl/Dumpert) uses syscalls to unhook *NtReadVirtualMemory* before dumping LSASS. The [associated write-up](https://outflank.nl/blog/2019/06/19/red-team-tactics-combining-direct-system-calls-and-srdi-to-bypass-av-edr/) is a fixture in the modern red team blog corpus.
+* **[@b4rtik](https://twitter.com/b4rtik)**/**[@matteomalvica](https://twitter.com/matteomalvica)** - Incorporated the Defender ATP *PssCaptureSnapshot* bypass detailed in this [blog post](https://www.matteomalvica.com/blog/2019/12/02/win-defender-atp-cred-bypass/) and the associated proof-of-concept, [ATPMiniDump](https://github.com/b4rtik/ATPMiniDump).
 
 ### Background
 
