@@ -43,8 +43,6 @@ typedef NTSYSAPI BOOLEAN(NTAPI* fnRtlEqualUnicodeString)(
     BOOLEAN CaseInSensitive
     );
 
-typedef NTSTATUS(WINAPI* fnRtlGetVersion)(PRTL_OSVERSIONINFOEXW);
-
 // MiniDumpWriteDump prototype
 typedef BOOL(WINAPI* fnMiniDumpWriteDump)(
     HANDLE                            hProcess,
@@ -56,9 +54,11 @@ typedef BOOL(WINAPI* fnMiniDumpWriteDump)(
     PMINIDUMP_CALLBACK_INFORMATION    CallbackParam
     );
 
+fnMiniDumpWriteDump GetMiniDumpWriteDump();
+
 BOOL ATPMiniDumpWriteDumpCallback(PVOID CallbackParam, const PMINIDUMP_CALLBACK_INPUT CallbackInput, PMINIDUMP_CALLBACK_OUTPUT CallbackOutput);
 
-// PssCaptureSnapshot
+// PSS snapshot functions
 typedef enum
 {
     PSS_CAPTURE_NONE = 0x00000000,
@@ -85,7 +85,7 @@ typedef enum
     PSS_CREATE_RELEASE_SECTION = 0x80000000
 } PSS_CAPTURE_FLAGS;
 
-DWORD dwSnapshotFlags = PSS_CAPTURE_VA_CLONE
+DWORD snapshotFlags = PSS_CAPTURE_VA_CLONE
                         | PSS_CAPTURE_HANDLES
                         | PSS_CAPTURE_HANDLE_NAME_INFORMATION
                         | PSS_CAPTURE_HANDLE_BASIC_INFORMATION
@@ -106,4 +106,9 @@ typedef DWORD(WINAPI* fnPssCaptureSnapshot)(
     PSS_CAPTURE_FLAGS CaptureFlags,
     DWORD             ThreadContextFlags,
     HPSS*             SnapshotHandle
+    );
+
+typedef DWORD(WINAPI* fnPssFreeSnapshot)(
+    HANDLE ProcessHandle,
+    HPSS   SnapshotHandle
     );

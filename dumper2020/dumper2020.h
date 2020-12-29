@@ -10,12 +10,12 @@
 
 #include <string>
 
-BOOL Dump(const wchar_t* wcDumpPath);
+BOOL Dump(LPWSTR dumpPath);
 BOOL ResolveFunctions();
 BOOL Requirements();
 DWORD GetPid();
 HANDLE GetHandle(DWORD dwPid);
 std::string GetDebugDLLPath();
-HANDLE CreateDumpFile(const wchar_t* wcDumpPath);
-BOOL DeleteDumpFile(const wchar_t* wcDumpPath);
+HANDLE CreateDumpFile(LPWSTR path);
+BOOL DeleteDumpFile(LPWSTR path);
 DWORD GetWinVersion();

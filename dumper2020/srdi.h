@@ -19,7 +19,7 @@
 
 typedef UINT_PTR(WINAPI * RDI)();
 
-HMODULE LoadDLL(const char * cDllPath);
+HMODULE LoadDLL(LPSTR dllPath);
 BOOL ConvertToShellcode(LPCSTR inFile, DWORD userFunction, LPVOID userData, DWORD userSize, DWORD flags, LPSTR &outBytes, DWORD &outSize);
 BOOL GetFileContents(LPCSTR filename, LPSTR * data, DWORD & size);
 FARPROC GetProcAddressR(HMODULE hModule, LPCSTR lpProcName);

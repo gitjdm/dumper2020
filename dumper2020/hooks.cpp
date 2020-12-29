@@ -11,116 +11,131 @@ using namespace std;
 // Called from: dumper2020!Dump
 VOID PatchHooks()
 {
-    HANDLE hProc = GetCurrentProcess(); // Handle to current process
-    HMODULE* hModules = nullptr;        // Pointer to the buffer containing the module handles     
-    DWORD dwModules = 0;                // Number of loaded modules
+    // Get handle to the heap
+    HANDLE heap = GetProcessHeap();
 
-    // Enumerate loaded modules
-    tie(hModules, dwModules) = GetModules();
+    // Initialize pointer to buffer containing array of module handles
+    HMODULE* moduleHandles = nullptr;
 
-    // Verify pointer is valid
-    if (!hModules)
-        return;
-
-    // Loop through modules, start at 1 to skip ourselves
-    for (DWORD i = 1; i < dwModules; i++)
+    // Allocate buffer for array of module handles
+    if ((moduleHandles = (HMODULE*)HeapAlloc(heap, HEAP_ZERO_MEMORY, sizeof(HMODULE) * 1024)))
     {
-        // New module struct
-        PLOADED_MODULE pModule = new LOADED_MODULE;
+        // Number of loaded modules
+        DWORD moduleCount = 0;
 
-        // Assign current module handle to the struct
-        pModule->Handle = hModules[i];
+        // Populate buffer with module handles
+        if ((moduleCount = GetModules(moduleHandles)))
+        {
+            // Get handle to the local process
+            HANDLE process = GetCurrentProcess();
 
-        // Get current module path and assign to the struct
-        GetModuleFileNameExW(hProc, pModule->Handle, pModule->Path, MAX_PATH);
+            // Loop through modules, start at 1 to skip ourselves
+            for (DWORD i = 1; i < moduleCount; i++)
+            {
+                // New module struct
+                PLOADED_MODULE module = new LOADED_MODULE;
 
-        // Check if any of the module's functions are hooked
-        if (CheckModuleForHooks(pModule)) {
+                // Assign current module handle to the struct
+                module->Handle = moduleHandles[i];
 
-            wcout << "[=] Module: " << pModule->Path << endl;
+                // Get current module path and assign to the struct
+                GetModuleFileNameExW(process, module->Handle, module->Path, MAX_PATH);
 
-            // Keep track of unhook attempts
-            int success = 0;
-            int failure = 0;
-            
-            // Loop through hooked functions and attempt to patch them
-            for (auto itr = pModule->HookedFunctions.begin(); itr != pModule->HookedFunctions.end(); ++itr) {
-                if (RestoreHookedFunction(*itr))
-                    // Successfully patched function
-                    success++;
-                else
-                    // Failed to patch function
-                    failure++;
+                // Check if any of the module's functions are hooked
+                if (CheckModuleForHooks(module))
+                {
+                    wcout << "[=] Module: " << module->Path << endl;
 
-                // Free allocated memory
-                if (*itr)
-                    delete *itr;
+                    // Keep track of unhook attempts
+                    int success = 0;
+                    int failure = 0;
+
+                    // Loop through hooked functions and attempt to patch them
+                    for (auto itr = module->HookedFunctions.begin(); itr != module->HookedFunctions.end(); ++itr)
+                    {
+                        if (RestoreHookedFunction(*itr))
+                            // Successfully patched function
+                            success++;
+                        else
+                            // Failed to patch function
+                            failure++;
+
+                        // Delete hooked function struct
+                        delete *itr;
+                    }
+
+                    // Clean up array of now invalid pointers
+                    module->HookedFunctions.clear();
+
+                    // Print stats
+                    if (success > 0)
+                        wcout << "    + UNHOOKED " << success << " functions" << endl;
+
+                    if (failure > 0)
+                        wcout << "    ! Failed to unhook " << failure << " functions" << endl;
+                }
+
+                // Delete module struct
+                delete module;
             }
 
-            // Clean up array of now invalid pointers
-            pModule->HookedFunctions.clear();
-
-            // Print stats
-            if (success > 0)
-                wcout << "    + UNHOOKED " << success << " functions" << endl;
-
-            if (failure > 0)
-                wcout << "    ! Failed to unhook " << failure << " functions" << endl;
-
+            // Close process handle
+            NtClose(process);
         }
-        
-        // Free allocated memory
-        if (pModule)
-            delete pModule;
-    }
+        else wcout << "[!] Failed to enumerate process modules" << endl;
 
-    // Free allocated memory
-    if (hModules)
-        HeapFree(GetProcessHeap(), NULL, hModules);
+        // Free module handles buffer
+        HeapFree(heap, NULL, moduleHandles);
+    }
+    else wcout << "[!] Failed to allocate memory for module handle array" << endl;
+
+    // Close heap handle
+    NtClose(heap);
 }
 
 // Function:    GetModules
 // Description: Enumerate loaded modules in the current process
 // Called from: PatchHooks
-// Returns:     (1) Pointer to the memory block containing the module handles 
-//              (2) Number of loaded modules
+// Returns:     Number of loaded modules, 0 on failure
 // Source:      https://github.com/jthuraisamy/TelemetrySourcerer/
-tuple<HMODULE*, DWORD> GetModules()
+DWORD GetModules(HMODULE* moduleHandles)
 {
-    HANDLE hProc = GetCurrentProcess();                 // Current process handle
-    HANDLE hHeap = GetProcessHeap();                    // Process heap handle
-    DWORD RequiredBytes = 0;                            // Bytes required to store module handles
-    DWORD ModuleHandlesSize = sizeof(HMODULE) * 1024;   // Initial allocation for buffer where module handles will be stored
+    // Initialize return variable containing number of loaded modules
+    DWORD moduleCount = 0;
 
-    // Allocate memory for the handles and get a pointer
-    HMODULE* ModuleHandles = (HMODULE*)HeapAlloc(hHeap, HEAP_ZERO_MEMORY, ModuleHandlesSize);
+    // Get handle to local process
+    HANDLE process = GetCurrentProcess();
 
-    if (!ModuleHandles)
-        // Allocation failed
-        return { nullptr, 0 };
+    // Get handle to process heap
+    HANDLE heap = GetProcessHeap();
 
-    // Enumerate modules
-    BOOL status = EnumProcessModulesEx(hProc, ModuleHandles, ModuleHandlesSize, &RequiredBytes, LIST_MODULES_DEFAULT);
+    // Initialize variable for bytes required to store module handles
+    DWORD bytesRequired = 0;
 
-    if (!status || RequiredBytes > ModuleHandlesSize) {
-        // Increase memory block to the required size
-        ModuleHandles = (HMODULE*)HeapReAlloc(hHeap, HEAP_ZERO_MEMORY, ModuleHandles, RequiredBytes);
-
-        if (!ModuleHandles)
-            // Reallocation failed
-            return { nullptr, 0 };
-
-        // Attempt to enumerate process modules again
-        status = EnumProcessModulesEx(hProc, ModuleHandles, RequiredBytes, &RequiredBytes, LIST_MODULES_DEFAULT);
-
-        if (!status)
-            // Failed a second time, let's move on
-            return { nullptr, 0 };
+    // Enumerate process modules
+    if (!(EnumProcessModulesEx(process, moduleHandles, sizeof(HMODULE) * 1024, &bytesRequired, LIST_MODULES_DEFAULT)))
+    {
+        // Failed to enumerate modules, check if buffer wasn't big enough
+        if (bytesRequired > sizeof(HMODULE) * 1024)
+        {
+            // Increase buffer to the required size
+            if ((moduleHandles = (HMODULE*)HeapReAlloc(heap, HEAP_ZERO_MEMORY, moduleHandles, bytesRequired)))
+            {
+                // Attempt to enumerate process modules again
+                if ((EnumProcessModulesEx(process, moduleHandles, bytesRequired, &bytesRequired, LIST_MODULES_DEFAULT)))
+                    // Successfully enumerated modules, get module count
+                    moduleCount = bytesRequired / sizeof(HMODULE);
+            }
+        }
     }
+    // Successfully enumerated modules, get module count
+    else moduleCount = bytesRequired / sizeof(HMODULE);
 
-    DWORD ModuleCount = RequiredBytes / sizeof(HMODULE);
+    // Close process and heap handle
+    NtClose(heap);
+    NtClose(process);
 
-    return { ModuleHandles, ModuleCount };
+    return moduleCount;
 }
 
 // Function:    CheckModuleForHooks

@@ -9,7 +9,6 @@
 #endif
 
 #include <vector>
-#include <tuple>
 
 // Struct:      HOOKED_FUNCTION
 // Describes:   A hooked function.
@@ -42,6 +41,6 @@ typedef struct _LOADED_MODULE {
 } LOADED_MODULE, *PLOADED_MODULE;
 
 VOID PatchHooks();
-std::tuple<HMODULE*, DWORD> GetModules();
-BOOL CheckModuleForHooks(PLOADED_MODULE pModule);
-BOOL RestoreHookedFunction(PHOOKED_FUNCTION pHookedFunction);
+DWORD GetModules(HMODULE* moduleHandles);
+BOOL CheckModuleForHooks(PLOADED_MODULE module);
+BOOL RestoreHookedFunction(PHOOKED_FUNCTION hookedFunction);
